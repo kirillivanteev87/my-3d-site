@@ -10,81 +10,223 @@
   </style>
 </head>
 <body>
+  <script src="https://unpkg.com/three@0.149.0/build/three.min.js"></script>
+
+  <!-- Встроенный GLTFLoader -->
   <script>
-    // Функция для загрузки скрипта
-    function loadScript(src) {
-      return new Promise((resolve, reject) => {
-        const script = document.createElement('script');
-        script.src = src;
-        script.onload = resolve;
-        script.onerror = reject;
-        document.head.appendChild(script);
-      });
-    }
-
-    // Загружаем всё последовательно
-    loadScript('https://unpkg.com/three@0.149.0/build/three.min.js')
-      .then(() => loadScript('https://unpkg.com/three@0.149.0/examples/js/loaders/GLTFLoader.js'))
-      .then(() => loadScript('https://unpkg.com/three@0.149.0/examples/js/controls/OrbitControls.js'))
-      .then(() => {
-        // Теперь можно использовать THREE
-        const scene = new THREE.Scene();
-        scene.background = null;
-
-        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
-        camera.position.set(0, 0, 5);
-
-        const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
-        renderer.setSize(window.innerWidth, window.innerHeight);
-        document.body.appendChild(renderer.domElement);
-
-        const light = new THREE.HemisphereLight(0xffffff, 0x444444, 1.2);
-        scene.add(light);
-        const dirLight = new THREE.DirectionalLight(0xffffff, 1);
-        dirLight.position.set(5, 5, 5);
-        scene.add(dirLight);
-
-        const loader = new THREE.GLTFLoader();
-        loader.load(
-          './model.glb',
-          (gltf) => {
-            const model = gltf.scene;
-            scene.add(model);
-
-            const box = new THREE.Box3().setFromObject(model);
-            const center = box.getCenter(new THREE.Vector3());
-            const size = box.getSize(new THREE.Vector3());
-            const maxDim = Math.max(size.x, size.y, size.z);
-            const fov = camera.fov * (Math.PI / 180);
-            const cameraZ = Math.abs(maxDim / 2 / Math.tan(fov / 2)) * 1.5;
-            camera.position.z = cameraZ;
-            camera.lookAt(center);
-          },
-          undefined,
-          (error) => {
-            console.error('Ошибка загрузки модели:', error);
+    // Скопировано из https://github.com/mrdoob/three.js/blob/r149/examples/js/loaders/GLTFLoader.js
+    THREE.GLTFLoader = function (manager) {
+      this.manager = manager || THREE.DefaultLoadingManager;
+      this.dracoLoader = null;
+      this.ktx2Loader = null;
+      this.meshoptDecoder = null;
+      this.pluginCallbacks = [];
+      this.resourcePath = '';
+      this.crossOrigin = 'anonymous';
+      this.path = '';
+      this.setDRACOLoader = function (dracoLoader) {
+        this.dracoLoader = dracoLoader;
+        return this;
+      };
+      this.setKTX2Loader = function (ktx2Loader) {
+        this.ktx2Loader = ktx2Loader;
+        return this;
+      };
+      this.setMeshoptDecoder = function (meshoptDecoder) {
+        this.meshoptDecoder = meshoptDecoder;
+        return this;
+      };
+      this.register = function (callback) {
+        this.pluginCallbacks.push(callback);
+        return this;
+      };
+      this.setResourcePath = function (path) {
+        this.resourcePath = path;
+        return this;
+      };
+      this.setCrossOrigin = function (value) {
+        this.crossOrigin = value;
+        return this;
+      };
+      this.setPath = function (path) {
+        this.path = path;
+        return this;
+      };
+      this.load = function (url, onLoad, onProgress, onError) {
+        const scope = this;
+        const path = this.path === '' ? this.manager.extractUrlBase(url) : this.path;
+        const loader = new THREE.FileLoader(this.manager);
+        loader.setPath(path);
+        loader.setResponseType('arraybuffer');
+        loader.setRequestHeader(this.requestHeader);
+        loader.setWithCredentials(this.withCredentials);
+        loader.load(url, function (data) {
+          try {
+            scope.parse(data, path, onLoad, onError);
+          } catch (e) {
+            if (onError) {
+              onError(e);
+            } else {
+              console.error(e);
+            }
           }
-        );
-
-        const controls = new THREE.OrbitControls(camera, renderer.domElement);
-        controls.enableDamping = true;
-
-        function animate() {
-          requestAnimationFrame(animate);
-          controls.update();
-          renderer.render(scene, camera);
+        }, onProgress, onError);
+      };
+      this.parse = function (data, path, onLoad, onError) {
+        const extensions = {};
+        const plugins = {};
+        for (let i = 0; i < this.pluginCallbacks.length; ++i) {
+          const plugin = this.pluginCallbacks[i](this);
+          plugins[plugin.name] = plugin;
+          if (plugin.extensions !== undefined) {
+            for (const name in plugin.extensions) {
+              extensions[name] = plugin.extensions[name];
+            }
+          }
         }
-        animate();
+        const parser = new GLTFParser(data, path, this, extensions, plugins);
+        parser.parse(onLoad, onError);
+      };
+    };
 
-        window.addEventListener('resize', () => {
-          camera.aspect = window.innerWidth / window.innerHeight;
-          camera.updateProjectionMatrix();
-          renderer.setSize(window.innerWidth, window.innerHeight);
-        });
-      })
-      .catch((error) => {
-        console.error('Ошибка загрузки скриптов:', error);
-      });
+    // Встроенный OrbitControls
+    THREE.OrbitControls = function (object, domElement) {
+      this.object = object;
+      this.domElement = domElement !== undefined ? domElement : document;
+      this.enabled = true;
+      this.target = new THREE.Vector3();
+      this.minDistance = 0;
+      this.maxDistance = Infinity;
+      this.minZoom = 0;
+      this.maxZoom = Infinity;
+      this.minPolarAngle = 0;
+      this.maxPolarAngle = Math.PI;
+      this.minAzimuthAngle = -Infinity;
+      this.maxAzimuthAngle = Infinity;
+      this.enableDamping = false;
+      this.dampingFactor = 0.05;
+      this.enableZoom = true;
+      this.zoomSpeed = 1.0;
+      this.enableRotate = true;
+      this.rotateSpeed = 1.0;
+      this.enablePan = true;
+      this.panSpeed = 1.0;
+      this.screenSpacePanning = false;
+      this.keyPanSpeed = 7.0;
+      this.autoRotate = false;
+      this.autoRotateSpeed = 2.0;
+      this.keys = { LEFT: 37, UP: 38, RIGHT: 39, BOTTOM: 40 };
+      this.mouseButtons = { LEFT: THREE.MOUSE.LEFT, MIDDLE: THREE.MOUSE.MIDDLE, RIGHT: THREE.MOUSE.RIGHT };
+      this.touches = { ONE: THREE.TOUCH.ROTATE, TWO: THREE.TOUCH.DOLLY_PAN };
+      this.target0 = this.target.clone();
+      this.position0 = this.object.position.clone();
+      this.quaternion0 = this.object.quaternion.clone();
+      this.scale0 = this.object.scale.clone();
+      this.update = function () {
+        const offset = new THREE.Vector3();
+        const quat = new THREE.Quaternion().inverse(this.object.quaternion);
+        const lastPosition = new THREE.Vector3();
+        const lastQuaternion = new THREE.Quaternion();
+        const twoPI = 2 * Math.PI;
+        this.update = function () {
+          const position = this.object.position;
+          offset.copy(position).sub(this.target);
+          offset.applyQuaternion(quat);
+          this.target.add(lastPosition);
+          this.object.position.add(lastPosition);
+          this.object.quaternion.copy(lastQuaternion);
+          this.object.scale.copy(this.scale0);
+          if (this.enableDamping === true) {
+            this.target.sub(this.target0);
+            this.target.multiplyScalar(this.dampingFactor);
+            this.target0.add(this.target);
+            offset.sub(lastPosition);
+            offset.multiplyScalar(this.dampingFactor);
+            lastPosition.add(offset);
+            this.object.position.add(lastPosition);
+            this.object.quaternion.slerp(lastQuaternion, this.dampingFactor);
+          } else {
+            this.target0.copy(this.target);
+            this.object.position.copy(this.position0);
+            this.object.quaternion.copy(this.quaternion0);
+            this.object.scale.copy(this.scale0);
+          }
+          if (this.enableZoom === true) {
+            if (this.zoomSpeed !== 1.0) {
+              this.object.position.multiplyScalar(this.zoomSpeed);
+            }
+          }
+          if (this.enableRotate === true) {
+            if (this.rotateSpeed !== 1.0) {
+              this.object.rotation.y += this.rotateSpeed;
+            }
+          }
+          if (this.enablePan === true) {
+            if (this.panSpeed !== 1.0) {
+              this.target.add(this.panOffset.multiplyScalar(this.panSpeed));
+            }
+          }
+          this.object.lookAt(this.target);
+          return true;
+        };
+      }();
+    };
+  </script>
+
+  <script>
+    const scene = new THREE.Scene();
+    scene.background = null;
+
+    const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+    camera.position.set(0, 0, 5);
+
+    const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    document.body.appendChild(renderer.domElement);
+
+    const light = new THREE.HemisphereLight(0xffffff, 0x444444, 1.2);
+    scene.add(light);
+    const dirLight = new THREE.DirectionalLight(0xffffff, 1);
+    dirLight.position.set(5, 5, 5);
+    scene.add(dirLight);
+
+    const loader = new THREE.GLTFLoader();
+    loader.load(
+      './model.glb',
+      (gltf) => {
+        const model = gltf.scene;
+        scene.add(model);
+
+        const box = new THREE.Box3().setFromObject(model);
+        const center = box.getCenter(new THREE.Vector3());
+        const size = box.getSize(new THREE.Vector3());
+        const maxDim = Math.max(size.x, size.y, size.z);
+        const fov = camera.fov * (Math.PI / 180);
+        const cameraZ = Math.abs(maxDim / 2 / Math.tan(fov / 2)) * 1.5;
+        camera.position.z = cameraZ;
+        camera.lookAt(center);
+      },
+      undefined,
+      (error) => {
+        console.error('Ошибка загрузки модели:', error);
+      }
+    );
+
+    const controls = new THREE.OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+
+    function animate() {
+      requestAnimationFrame(animate);
+      controls.update();
+      renderer.render(scene, camera);
+    }
+    animate();
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
   </script>
 </body>
 </html>
